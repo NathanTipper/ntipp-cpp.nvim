@@ -77,25 +77,36 @@ M.createClass = function(name, path)
 	vim.cmd("w")
 end
 
-M.switchClassFile = function()
+M._findFileComplement = function()
 	local current_buf = vim.api.nvim_buf_get_name(0)
 
 	local dir = ""
-	for i = current_buf:len(), 1, -1 do
-		local char = current_buf:sub(i, i)
-		if char == "\\" then
-			dir = current_buf:sub(1, i)
-			if dir == M._as_windows_path(M._srcDir) then
-				dir = M._as_windows_path(M._inclDir) .. current_buf:sub(i + 1, -4) .. "hpp"
-				break
-			elseif dir == M._as_windows_path(M._inclDir) then
-				dir = M._as_windows_path(M._srcDir) .. current_buf:sub(i + 1, -4) .. "cpp"
-				break
+	local comp_file = ""
+
+	if M._srcDir ~= "" and M._srcDir == M._inclDir then
+		comp_file = (current_buf:sub(-4) == ".hpp" and current_buf:sub(1, -4) .. "cpp")
+			or current_buf:sub(1, -4) .. "hpp"
+	else
+		for i = current_buf:len(), 1, -1 do
+			local char = current_buf:sub(i, i)
+			if char == "\\" then
+				dir = current_buf:sub(1, i)
+				if dir == M._as_windows_path(M._srcDir) then
+					comp_file = M._as_windows_path(M._inclDir) .. current_buf:sub(i + 1, -4) .. "hpp"
+					break
+				elseif dir == M._as_windows_path(M._inclDir) then
+					comp_file = M._as_windows_path(M._srcDir) .. current_buf:sub(i + 1, -4) .. "cpp"
+					break
+				end
 			end
 		end
 	end
 
-	vim.cmd("e " .. dir)
+	return comp_file
+end
+
+M.switchClassFile = function()
+	vim.cmd("e " .. M._findFileComplement())
 end
 
 M.issuePromptCreateClass = function()
@@ -126,7 +137,7 @@ end
 
 M.createFuncFromProto = function()
 	local line_num = vim.fn.line(".")
-	local line = vim.api.nvim_buf_get_lines(0, line_num, line_num + 1, true)
+	local line = vim.api.nvim_buf_get_lines(0, line_num - 1, line_num, true)
 	local file = vim.api.nvim_buf_get_lines(0, 0, -1, true)
 
 	local next = next
@@ -165,6 +176,12 @@ M.createFuncFromProto = function()
 	current_line = current_line:sub(s, e)
 
 	local first_space_ind = current_line:find("%s")
+
+	if first_space_ind == nil then
+		print("Could not find a space on current line")
+		return
+	end
+
 	local return_type = current_line:sub(1, first_space_ind - 1)
 
 	local func_name_end = current_line:find("%(")
@@ -178,7 +195,7 @@ M.createFuncFromProto = function()
 		end
 	end
 
-	if class_def ~= "" and class_def ~= nil then
+	if class_def == "" or class_def == nil then
 		print("ERROR: Could not find class definition!")
 		return
 	end
@@ -191,17 +208,32 @@ M.createFuncFromProto = function()
 		return
 	end
 
-	local func_imp = return_type
-		.. " "
-		.. class_name
-		.. "::"
-		.. func_name
-		.. current_line:sub(arg_list_begin, arg_list_end)
-		.. "\n{"
-		.. "\n"
-		.. "}\n"
+	local src_file = M._findFileComplement()
+	vim.cmd("e " .. src_file)
+
+	local src_lines = vim.api.nvim_buf_get_lines(0, -2, -1, true)
+	if next(src_lines) == nil then
+		print("Could not get last line of src file")
+		return
+	end
+
+	local last_line = src_lines[1]
+	if last_line == "" then
+		vim.api.nvim_buf_set_lines(0, -2, -1, true, { last_line, "" })
+	end
+
+	local func_imp = {
+		"",
+		return_type .. " " .. class_name .. "::" .. func_name .. current_line:sub(arg_list_begin, arg_list_end),
+		"{",
+		"",
+		"}",
+	}
+
 	-- for now we will ignore putting default parameter names. Not sure how to tell 100% if there is no name
-	print(func_imp)
+
+	vim.api.nvim_buf_set_lines(0, -2, -1, true, func_imp)
+	vim.cmd("w")
 end
 
 M.setup = function(opts)
@@ -210,6 +242,12 @@ M.setup = function(opts)
 
 	vim.keymap.set("n", "<leader>cc", M.issuePromptCreateClass, { desc = "Create C++ class" })
 	vim.keymap.set("n", "<leader>cs", M.switchClassFile, { desc = "Switch class file" })
+	vim.keymap.set(
+		"n",
+		"<leader>cp",
+		M.createFuncFromProto,
+		{ desc = "Create implementation of prototype on current line" }
+	)
 end
 
 return M
