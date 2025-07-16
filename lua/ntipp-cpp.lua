@@ -3,10 +3,6 @@ local M = {}
 M._inclDir = ""
 M._srcDir = ""
 
-M._as_windows_path = function(path)
-	return string.gsub(path, "/", "\\")
-end
-
 --- Sets the include path for newly created header files
 --- @param incl_path string Path to be set as the project include folder. Expects forward slashes.
 M.set_incl_dir = function(incl_path)
@@ -27,7 +23,7 @@ end
 
 --- Creates a class with a filename of the same name in the provided include and source directories
 ---@param name string name of the class to create
----@param path string? optional field for sub directories
+---@param path string? optional field for sub directories. They will created if they don't exist.
 M.createClass = function(name, path)
 	if M._inclDir == "" or M._srcDir == "" then
 		return
@@ -75,34 +71,6 @@ M.createClass = function(name, path)
 	}
 	vim.api.nvim_buf_set_lines(0, 0, -1, false, classDef)
 	vim.cmd("w")
-end
-
-M._findFileComplement = function()
-	local current_buf = vim.api.nvim_buf_get_name(0)
-
-	local dir = ""
-	local comp_file = ""
-
-	if M._srcDir ~= "" and M._srcDir == M._inclDir then
-		comp_file = (current_buf:sub(-4) == ".hpp" and current_buf:sub(1, -4) .. "cpp")
-			or current_buf:sub(1, -4) .. "hpp"
-	else
-		for i = current_buf:len(), 1, -1 do
-			local char = current_buf:sub(i, i)
-			if char == "\\" then
-				dir = current_buf:sub(1, i)
-				if dir == M._as_windows_path(M._srcDir) then
-					comp_file = M._as_windows_path(M._inclDir) .. current_buf:sub(i + 1, -4) .. "hpp"
-					break
-				elseif dir == M._as_windows_path(M._inclDir) then
-					comp_file = M._as_windows_path(M._srcDir) .. current_buf:sub(i + 1, -4) .. "cpp"
-					break
-				end
-			end
-		end
-	end
-
-	return comp_file
 end
 
 M.switchClassFile = function()
@@ -187,20 +155,32 @@ M.createFuncFromProto = function()
 	local func_name_end = current_line:find("%(")
 	local func_name = current_line:sub(first_space_ind + 1, func_name_end - 1)
 
-	local class_def = ""
-	for _, str in ipairs(file) do
-		class_def = str:match("class%s-.-%s-{")
-		if class_def ~= "" and class_def ~= nil then
-			break
+	local class_name = ""
+	do
+		local found = false
+		local pattern_to_match = "%s-class%s.-%s"
+		local file_name = vim.fn.expand("%:p:t")
+		file_name = file_name:sub(1, file_name:find(".") - 1)
+		for _, str in ipairs(file) do
+			class_name = str:match(pattern_to_match)
+			if M._isValidString(class_name) then
+				if str:find(";") == nil then
+					class_name = class_name:gsub("class", ""):gsub(" ", "")
+					if M._isValidString(class_name) then
+						found = true
+						break
+					end
+				else
+					print("Found prototype: " .. class_name)
+				end
+			end
+		end
+
+		if not found then
+			print("Could not find the class name. Expectation is that the file name can be found in the class name")
+			return
 		end
 	end
-
-	if class_def == "" or class_def == nil then
-		print("ERROR: Could not find class definition!")
-		return
-	end
-
-	local class_name = string.gsub(class_def:match("%s.-%s"), " ", "")
 
 	local arg_list_begin = func_name_end
 	local arg_list_end = current_line:find("%)")
@@ -218,7 +198,7 @@ M.createFuncFromProto = function()
 	end
 
 	local last_line = src_lines[1]
-	if last_line == "" then
+	if last_line ~= "" then
 		vim.api.nvim_buf_set_lines(0, -2, -1, true, { last_line, "" })
 	end
 
@@ -248,6 +228,42 @@ M.setup = function(opts)
 		M.createFuncFromProto,
 		{ desc = "Create implementation of prototype on current line" }
 	)
+end
+
+M._findFileComplement = function()
+	local current_buf = vim.api.nvim_buf_get_name(0)
+
+	local dir = ""
+	local comp_file = ""
+
+	if M._srcDir ~= "" and M._srcDir == M._inclDir then
+		comp_file = (current_buf:sub(-4) == ".hpp" and current_buf:sub(1, -4) .. "cpp")
+			or current_buf:sub(1, -4) .. "hpp"
+	else
+		for i = current_buf:len(), 1, -1 do
+			local char = current_buf:sub(i, i)
+			if char == "\\" then
+				dir = current_buf:sub(1, i)
+				if dir == M._as_windows_path(M._srcDir) then
+					comp_file = M._as_windows_path(M._inclDir) .. current_buf:sub(i + 1, -4) .. "hpp"
+					break
+				elseif dir == M._as_windows_path(M._inclDir) then
+					comp_file = M._as_windows_path(M._srcDir) .. current_buf:sub(i + 1, -4) .. "cpp"
+					break
+				end
+			end
+		end
+	end
+
+	return comp_file
+end
+
+M._as_windows_path = function(path)
+	return string.gsub(path, "/", "\\")
+end
+
+M._isValidString = function(str)
+	return type(str) == "string" and str ~= ""
 end
 
 return M
