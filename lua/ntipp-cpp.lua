@@ -7,6 +7,17 @@ M._DEBUG = nil
 M._slo = nil -- Single Line syntax only
 M._pretty_ml_comments = nil -- @NOTE: Cannot be used with _slo. _slo takes priority.
 M._cc_preview_win_id = nil
+M.opts = {
+	build = {
+		cmd = "",
+		err_check_int = 0,
+		max_err_check_time = 0,
+		check_func = nil
+	}
+}
+M._buildTimeElapsed = 0
+M._buildTimer = nil
+M._buildComplete = false
 
 M._setRootDir = function(root_dir)
 	if M._isValidString(root_dir) then
@@ -651,6 +662,104 @@ M._floatRestrictCursor = function(res)
 	vim.api.nvim_win_set_cursor(0, { des_row, des_col })
 end
 
+M._splitString = function(str, delimiter)
+	local current_index = 0
+	local last_index = 1
+	local output = {}
+	while true do
+		current_index = str:find(delimiter, current_index + 1)
+		if current_index then
+			table.insert(output, str:sub(last_index, current_index - 1))
+			last_index = current_index + 1
+		else
+			break
+		end
+	end
+
+	return output
+end
+
+M.buildProject = function()
+	print("Building!")
+	M._buildComplete = false
+	M._buildTimer = vim.uv.new_timer()
+	M._buildErrMsgs = {}
+	if M._buildTimer then
+		local t = M.opts.build.err_check_int
+		M._buildTimer:start(t, 0, M.opts.build.check_func)
+	end
+
+	vim.system({ M.opts.build.cmd }, { text = true }, function(out)
+		local stdout_lines = M._splitString(out.stdout, '\n')
+		local win_incpath = M._asWindowsPath(M._inclDir)
+		local win_srcpath = M._asWindowsPath(M._srcDir)
+		if win_incpath == "" then
+			print("Empty")
+		end
+
+		if win_srcpath == "" then
+			print("Empty")
+		end
+		for _, str in ipairs(stdout_lines) do
+			local error_msg = str:match(win_incpath .. ".-hpp%(%d+%):") or str:match(win_srcpath .. ".-cpp%(%d+%):")
+			if error_msg then
+				local filename_e = error_msg:find("%(")
+
+				local filename = error_msg:sub(1, filename_e - 1)
+
+				local line_num = error_msg:match("%d+", filename_e)
+				local _, error_s = str:find('%):')
+				local error_e = str:find(':', error_s + 1)
+
+				local err_type = ""
+				if str:match("error", error_s + 1) then
+					err_type = "E"
+				elseif str:match("warning", error_s + 1) then
+					err_type = "W"
+				end
+
+				local error_num = str:match("C%d+", error_s)
+				error_num = error_num:sub(2)
+
+				local error_text = str:sub(error_e + 1)
+				table.insert(M._buildErrMsgs, { filename = filename, lnum = line_num, type = err_type, nr = error_num, text = error_text })
+			end
+		end
+
+		print("Build complete")
+		print("pppp")
+		M._buildComplete = true
+	end)
+end
+
+M._resetBuild = function()
+	M._buildComplete = false
+	M._buildTimer:stop()
+end
+
+M._tryPushErrorMsgsToQfList = function()
+	if M._buildComplete and not M._isTableEmpty(M._buildErrMsgs) then
+		vim.schedule(M._pushErrorMsgsToQfList)
+		M._resetBuild()
+	else
+		if M._buildTimeElapsed >= M.opts.build.max_err_check_time then
+			M._resetBuild()
+		else
+			if M._buildTimer then
+				M._buildTimeElapsed = M._buildTimeElapsed + M.opts.build.err_check_int
+				M._buildTimer:start(M.opts.build.err_check_int, 0, M._tryPushErrorMsgsToQfList)
+			end
+		end
+	end
+end
+
+M._pushErrorMsgsToQfList = function()
+	vim.fn.setqflist(M._buildErrMsgs, 'a')
+	vim.cmd("copen")
+end
+
+---comment
+---@param opts any
 M.setup = function(opts)
 	if not M._isValidString(opts.root_dir) then
 		print("ERROR::setup : Root directory cannot be nil or empty")
@@ -658,6 +767,8 @@ M.setup = function(opts)
 	end
 
 	M._setRootDir(opts.root_dir)
+	M.set_incl_dir(opts.incl_dir)
+	M.set_src_dir(opts.src_dir)
 
 	M._DEBUG = opts.debug
 	M._slo = opts.slo
@@ -674,6 +785,17 @@ M.setup = function(opts)
 	)
 	vim.keymap.set("v", "<leader>co", M.visualToggleComments, { desc = "Toggle comments on selected lines" })
 	vim.keymap.set("n", "<leader>co", M.toggleComment, { desc = "Toggle comment on current line" })
+	vim.keymap.set("n", "<C-B>", M.buildProject, { desc = "Run build script" })
+
+	M.opts.build = {
+		cmd = "build.bat",
+		err_check_int = 5000,
+		max_err_check_time = 10000,
+		check_func = M._tryPushErrorMsgsToQfList
+	}
+
+	M._buildTimer = nil
+	vim.opt.errorformat = "%f(%l): %r"
 end
 
 M._findFileComplement = function()
@@ -692,8 +814,7 @@ M._findFileComplement = function()
 			local char = current_buf:sub(i, i)
 			if char == "\\" then
 				dir = current_buf:sub(1, i)
-				if dir == full_src_path then
-					comp_file = full_include_path .. M._asWindowsPath(current_buf:sub(i + 1, -4)) .. "hpp"
+				if dir == full_src_path then comp_file = full_include_path .. M._asWindowsPath(current_buf:sub(i + 1, -4)) .. "hpp"
 					break
 				elseif dir == full_include_path then
 					comp_file = full_src_path .. M._asWindowsPath(current_buf:sub(i + 1, -4)) .. "cpp"
