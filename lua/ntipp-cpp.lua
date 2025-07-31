@@ -35,6 +35,10 @@ M.set_incl_dir = function(incl_path)
 		return
 	end
 
+	if not incl_path then
+		return
+	end
+
 	M._inclDir = incl_path
 	if M._inclDir ~= ""  and M._inclDir:sub(-1, -1) ~= "/" then
 		M._inclDir = M._inclDir .. "/"
@@ -46,6 +50,10 @@ end
 M.set_src_dir = function(src_path)
 	if not M._rootDir then
 		print("ERROR::set_src_dir : Root directory not set!")
+		return
+	end
+
+	if not src_path then
 		return
 	end
 
@@ -317,25 +325,21 @@ M.createFuncFromProto = function()
 	end
 
 
-	local first_space_ind = current_line:find("%s")
-	local first_bracket_ind = current_line:find("%(")
+	local fn_begin, fn_end = current_line:find("%S*%(")
 	local return_type = ""
 	local func_name = nil
 	local scope_name = nil
 
-	if first_space_ind and first_space_ind < first_bracket_ind then
-		return_type = current_line:match("^%S*%s")
-		func_name = current_line:sub(first_space_ind + 1, first_bracket_ind - 1)
-		local add_type_spaced_s, add_type_spaced_e = func_name:find("^[%*&]*")
-		if add_type_spaced_s and add_type_spaced_e then
-			return_type = return_type .. func_name:sub(add_type_spaced_s, add_type_spaced_e)
-			func_name = func_name:sub(add_type_spaced_e + 1)
-		end
-	elseif first_bracket_ind then
-		func_name = current_line:sub(1, first_bracket_ind - 1)
-		scope_name = func_name .. "::"
-	else
-		print("ERROR::createFuncFromProto : Function prototype doesn't appear to be valid. Please fix")
+	func_name = current_line:sub(fn_begin, fn_end - 1)
+
+	if fn_begin > 2 then
+		return_type = current_line:sub(1, fn_begin - 2)
+	end
+
+	local add_type_spaced_s, add_type_spaced_e = func_name:find("^[%*&]*")
+	if add_type_spaced_s and add_type_spaced_e then
+		return_type = return_type .. func_name:sub(add_type_spaced_s, add_type_spaced_e)
+		func_name = func_name:sub(add_type_spaced_e + 1)
 	end
 
 	if not scope_name then
@@ -400,13 +404,13 @@ M.createFuncFromProto = function()
 	local first_line = return_type .. scope_name .. func_name
 	if is_ml_def then
 		local currentIndex = 0
-		local lastIndex = first_bracket_ind
+		local lastIndex = fn_end
 		local formatted_str = nil
 		while true do
 			currentIndex = current_line:find("\n", currentIndex + 1)
 			if currentIndex then
 				formatted_str = current_line:sub(lastIndex, currentIndex - 1)
-				if lastIndex == first_bracket_ind then
+				if lastIndex == fn_end then
 					formatted_str = first_line .. formatted_str
 				end
 			else
@@ -693,13 +697,6 @@ M.buildProject = function()
 		local stdout_lines = M._splitString(out.stdout, '\n')
 		local win_incpath = M._asWindowsPath(M._inclDir)
 		local win_srcpath = M._asWindowsPath(M._srcDir)
-		if win_incpath == "" then
-			print("Empty")
-		end
-
-		if win_srcpath == "" then
-			print("Empty")
-		end
 		for _, str in ipairs(stdout_lines) do
 			local error_msg = str:match(win_incpath .. ".-hpp%(%d+%):") or str:match(win_srcpath .. ".-cpp%(%d+%):")
 			if error_msg then
@@ -727,7 +724,6 @@ M.buildProject = function()
 		end
 
 		print("Build complete")
-		print("pppp")
 		M._buildComplete = true
 	end)
 end
