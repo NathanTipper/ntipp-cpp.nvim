@@ -7,17 +7,7 @@ M._DEBUG = nil
 M._slo = nil -- Single Line syntax only
 M._pretty_ml_comments = nil -- @NOTE: Cannot be used with _slo. _slo takes priority.
 M._cc_preview_win_id = nil
-M.opts = {
-	build = {
-		cmd = "",
-		err_check_int = 0,
-		max_err_check_time = 0,
-		check_func = nil
-	}
-}
-M._buildTimeElapsed = 0
-M._buildTimer = nil
-M._buildComplete = false
+M._buildErrMsgs = {}
 
 M._setRootDir = function(root_dir)
 	if M._isValidString(root_dir) then
@@ -430,7 +420,7 @@ M.createFuncFromProto = function()
 			end
 		end
 	else
-		local args = current_line:sub(first_bracket_ind)
+		local args = current_line:sub(fn_end)
 		args = M._deleteDefaultArgs(args)
 		table.insert(func_imp, first_line .. args)
 	end
@@ -667,6 +657,10 @@ M._floatRestrictCursor = function(res)
 end
 
 M._splitString = function(str, delimiter)
+	if not str then
+		return nil
+	end
+
 	local current_index = 0
 	local last_index = 1
 	local output = {}
@@ -676,6 +670,7 @@ M._splitString = function(str, delimiter)
 			table.insert(output, str:sub(last_index, current_index - 1))
 			last_index = current_index + 1
 		else
+			table.insert(output, str:sub(last_index))
 			break
 		end
 	end
@@ -685,73 +680,90 @@ end
 
 M.buildProject = function()
 	print("Building!")
-	M._buildComplete = false
-	M._buildTimer = vim.uv.new_timer()
-	M._buildErrMsgs = {}
-	if M._buildTimer then
-		local t = M.opts.build.err_check_int
-		M._buildTimer:start(t, 0, M.opts.build.check_func)
-	end
+	local build_buf = vim.api.nvim_create_buf(false, true)
+	local win_config = {
+		vertical = true,
+		split = "right"
+	}
 
-	vim.system({ M.opts.build.cmd }, { text = true }, function(out)
-		local stdout_lines = M._splitString(out.stdout, '\n')
-		local win_incpath = M._asWindowsPath(M._inclDir)
-		local win_srcpath = M._asWindowsPath(M._srcDir)
-		for _, str in ipairs(stdout_lines) do
-			local error_msg = str:match(win_incpath .. ".-hpp%(%d+%):") or str:match(win_srcpath .. ".-cpp%(%d+%):")
-			if error_msg then
-				local filename_e = error_msg:find("%(")
+	local build_win_id = vim.api.nvim_open_win(build_buf, false, win_config)
 
-				local filename = error_msg:sub(1, filename_e - 1)
+	local stream_buffer = ""
+	local process_stream = function(data)
+		if #data == 1 and data[1] == '' then
+			return
+		end
 
-				local line_num = error_msg:match("%d+", filename_e)
-				local _, error_s = str:find('%):')
-				local error_e = str:find(':', error_s + 1)
+		for _, str in ipairs(data) do
+			if str == '' then
+				local esc_char = string.char(27)
+				local patterns_to_KILL = {
+					esc_char .. "%[%d*;?%d*m",
+					string.char(13)
+				}
 
-				local err_type = ""
-				if str:match("error", error_s + 1) then
-					err_type = "E"
-				elseif str:match("warning", error_s + 1) then
-					err_type = "W"
+				for _, pattern in ipairs(patterns_to_KILL) do
+					stream_buffer = stream_buffer:gsub(pattern, "")
 				end
 
-				local error_num = str:match("C%d+", error_s)
-				error_num = error_num:sub(2)
-
-				local error_text = str:sub(error_e + 1)
-				table.insert(M._buildErrMsgs, { filename = filename, lnum = line_num, type = err_type, nr = error_num, text = error_text })
-			end
-		end
-
-		print("Build complete")
-		M._buildComplete = true
-	end)
-end
-
-M._resetBuild = function()
-	M._buildComplete = false
-	M._buildTimer:stop()
-end
-
-M._tryPushErrorMsgsToQfList = function()
-	if M._buildComplete and not M._isTableEmpty(M._buildErrMsgs) then
-		vim.schedule(M._pushErrorMsgsToQfList)
-		M._resetBuild()
-	else
-		if M._buildTimeElapsed >= M.opts.build.max_err_check_time then
-			M._resetBuild()
-		else
-			if M._buildTimer then
-				M._buildTimeElapsed = M._buildTimeElapsed + M.opts.build.err_check_int
-				M._buildTimer:start(M.opts.build.err_check_int, 0, M._tryPushErrorMsgsToQfList)
+				local last_line = vim.api.nvim_buf_get_lines(build_buf, -2, -1, false)[1]
+				if last_line == "" then
+					vim.api.nvim_buf_set_lines(build_buf, -2, -1, false, { stream_buffer })
+				else
+					vim.api.nvim_buf_set_lines(build_buf, -2, -1, false, { last_line, stream_buffer })
+				end
+				stream_buffer = ""
+			else
+				stream_buffer = stream_buffer .. str
 			end
 		end
 	end
+	vim.fn.jobstart({ "make" },
+		{
+			on_exit = function()
+				local file = io.open("build.log", "r")
+				if file then
+					M._buildErrMsgs = {}
+					local content = file:read("*all")
+					local lines = M._splitString(content, '\n')
+					if lines and not M._isTableEmpty(lines) then
+						for _, str in ipairs(lines) do
+							local error = str:match(".-%.[ch]p?p?:%d*:%d*:.-:.*")
+							if error then
+								local error_split = M._splitString(error, ":")
+								local error_type = (error_split[4]:match("error") and 'E') or 'W'
+								table.insert(M._buildErrMsgs,
+									{
+										filename = error_split[1],
+										lnum = error_split[2],
+										col = error_split[3],
+										type = error_type,
+										text = error_split[5]
+									})
+							end
+						end
+					end
+					vim.fn.input("Build complete. Hit any key to close")
+					vim.api.nvim_win_close(build_win_id, true)
+					M._pushErrorMsgsToQfList()
+					file:close()
+				end
+			end,
+			on_stdout = function(_, data, _)
+				process_stream(data)
+			end,
+			on_stderr = function(_, data, _)
+				process_stream(data)
+			end
+		}
+	)
 end
 
 M._pushErrorMsgsToQfList = function()
-	vim.fn.setqflist(M._buildErrMsgs, 'a')
-	vim.cmd("copen")
+	if not M._isTableEmpty(M._buildErrMsgs) then
+		vim.fn.setqflist(M._buildErrMsgs, 'r')
+		vim.cmd("copen")
+	end
 end
 
 ---comment
@@ -772,26 +784,18 @@ M.setup = function(opts)
 
 	vim.keymap.set("n", "<leader>cc", M.createClass, { desc = "Create C++ class" })
 	vim.keymap.set("n", "<leader>cd", M.createDataStructure, { desc = "Create data structure" })
-	vim.keymap.set("n", "<leader>cs", M.switchClassFile, { desc = "Switch class file" })
+	vim.keymap.set("n", "<C-O>", M.switchClassFile, { desc = "Switch class file" })
 	vim.keymap.set(
 		"n",
 		"<leader>cp",
 		M.createFuncFromProto,
 		{ desc = "Create implementation of prototype on current line" }
 	)
-	vim.keymap.set("v", "<leader>co", M.visualToggleComments, { desc = "Toggle comments on selected lines" })
-	vim.keymap.set("n", "<leader>co", M.toggleComment, { desc = "Toggle comment on current line" })
+	vim.keymap.set("v", "<C-C>", M.visualToggleComments, { desc = "Toggle comments on selected lines" })
+	vim.keymap.set("n", "<C-C>", M.toggleComment, { desc = "Toggle comment on current line" })
 	vim.keymap.set("n", "<C-B>", M.buildProject, { desc = "Run build script" })
-
-	M.opts.build = {
-		cmd = "build.bat",
-		err_check_int = 5000,
-		max_err_check_time = 10000,
-		check_func = M._tryPushErrorMsgsToQfList
-	}
-
-	M._buildTimer = nil
-	vim.opt.errorformat = "%f(%l): %r"
+	vim.keymap.set("n", "<leader>cq", function() vim.cmd("copen") end, { desc = "Open qfix list" })
+	vim.keymap.set("n", "<leader>cQ", function() vim.cmd("cclose") end, { desc = "Close qfix list" })
 end
 
 M._findFileComplement = function()
