@@ -329,7 +329,7 @@ M.createFuncFromProto = function()
 	func_name = current_line:sub(fn_begin, fn_end - 1)
 
 	if fn_begin > 2 then
-		return_type = current_line:sub(1, fn_begin - 2)
+		return_type = current_line:sub(1, fn_begin - 1)
 	end
 
 	local add_type_spaced_s, add_type_spaced_e = func_name:find("^[%*&]*")
@@ -734,7 +734,6 @@ M._processStream = function(stream_buffer, data, output_buffer)
 		else
 			for i = 1, #str, 1 do
 				local c = str:sub(i, i)
-				print(c)
 				if c == '\n' then
 					local subIndex = i - 1
 					if str:sub(subIndex, subIndex) == '\r' then
@@ -803,27 +802,41 @@ M.buildProject = function(opts)
 					local lines = M._splitString(content, '\n')
 					if lines and not M._isTableEmpty(lines) then
 						for _, str in ipairs(lines) do
-							-- filename(line_number,column_number) : diagnostic_type error_code : message
-							local error = str:match(".-%.[ch]p?p?%(%d*,%d*%)%s:%s.-:.-")
+							-- filename(line_number[,column_number]): diagnostic_type error_code : message
+							local error = str:match(".-%.[ch]p?p?%(%d*,?%d*%):.-:.*")
 							if error then
+								local errorMsg = {}
+								print("We have an error: \n\n\t" .. error)
 								local filename_end = error:find("%(")
-								local line_number_end = error:find(",", filename_end)
-								local col_number_end = error:find("%)", line_number_end)
-								local diagnostic_type_s = error:find(":", col_number_end) + 2
-								local diagnostic_type_e = error:find("%s", diagnostic_type_s) - 1
-								local error_code_s = error:find("%S", diagnostic_type_e + 1)
-								local error_code_e = error:find("%s", error_code_s) - 1
-								local error_message_s = error:find(":", error_code_e) + 1
+								errorMsg.filename = error:sub(1, filename_end - 1)
 
+								local line_number_end = error:find(",", filename_end)
+								local col_number_end = nil
+								if not line_number_end then
+									line_number_end = error:find("%)")
+								else
+									col_number_end = error:find("%)")
+								end
+
+								errorMsg.lnum = error:sub(filename_end + 1, line_number_end - 1)
+								if col_number_end then
+									errorMsg.col = error:sub(line_number_end + 1, col_number_end - 1)
+								end
+
+								local diagnostic_search_s = col_number_end or line_number_end
+								local diagnostic_type_s = error:find(":", diagnostic_search_s) + 2
+								local diagnostic_type_e = error:find("%d", diagnostic_type_s) - 3
 								local error_type = (error:sub(diagnostic_type_s, diagnostic_type_e):match("error") and "E") or "W"
-								table.insert(M._buildState.errorMsgs,
-									{
-										filename = error:sub(1, filename_end - 1),
-										lnum = error:sub(filename_end + 1, line_number_end - 1),
-										col = error:sub(line_number_end + 1, col_number_end - 1),
-										type = error_type,
-										text = error:sub(error_message_s)
-									})
+								errorMsg.type = error_type
+
+								local error_code_s = error:find("%d", diagnostic_type_e + 1)
+								local error_code_e = error:find(":", error_code_s)
+								errorMsg.nr = error:sub(error_code_s - 1, error_code_e - 1)
+								errorMsg.text = error:sub(error_code_e + 2)
+
+								print(vim.inspect(errorMsg))
+
+								table.insert(M._buildState.errorMsgs, errorMsg)
 							end
 						end
 					end
@@ -836,6 +849,8 @@ M.buildProject = function(opts)
 						M._pushErrorMsgsToQfList()
 					end
 					file:close()
+				else
+					print("Could not open build.log")
 				end
 			end,
 			on_stdout = function(_, data, _)
@@ -852,6 +867,8 @@ M._pushErrorMsgsToQfList = function()
 	if not M._isTableEmpty(M._buildState.errorMsgs) then
 		vim.fn.setqflist(M._buildState.errorMsgs, 'r')
 		vim.cmd("copen")
+	else
+		vim.cmd("cclose")
 	end
 end
 
@@ -889,7 +906,18 @@ M.setup = function(opts)
 	end, { desc = "Build project and run" })
 	vim.keymap.set("n", "<leader>cq", function() vim.cmd("copen") end, { desc = "Open qfix list" })
 	vim.keymap.set("n", "<leader>cQ", function() vim.cmd("cclose") end, { desc = "Close qfix list" })
-
+	vim.api.nvim_create_autocmd({'BufEnter'}, {
+		group = vim.api.nvim_create_augroup("ntipp-format-BufEnter", { clear = true }),
+		pattern = { '*.h' },
+		callback = function(ev)
+			local tabstop = vim.bo[ev.buf].tabstop
+			local shiftwidth = vim.bo[ev.buf].shiftwidth
+			if tabstop > 4 and shiftwidth > 4 then
+				vim.bo[ev.buf].tabstop = 4
+				vim.bo[ev.buf].shiftwidth = 4
+			end
+		end
+	})
 end
 
 M._fileExists = function(filename)
@@ -913,10 +941,9 @@ M._findFileComplement = function()
 	local comp_file = nil
 
 	local extension_map = {
+		h = "cpp",
 		c = "h",
-		h = "c",
-		cpp = "hpp",
-		hpp = "cpp"
+		cpp = "h"
 	}
 
 	local extension = current_buf:match("%.[ch]p?p?")
@@ -926,7 +953,7 @@ M._findFileComplement = function()
 
 	local comp_extension = extension_map[extension:sub(2)]
 	if M._srcDir == "" and M._srcDir == M._inclDir then
-		comp_file = current_buf:sub(1, -#comp_extension) .. comp_extension
+		comp_file = current_buf:sub(1, -#extension) .. comp_extension
 	else
 		local full_src_path = M._winGetSrcFullFilePath()
 		local full_include_path = M._winGetIncludeFullFilePath()
@@ -935,13 +962,15 @@ M._findFileComplement = function()
 			if char == "\\" then
 				dir = current_buf:sub(1, i)
 				if dir == full_src_path then
-					comp_file = full_include_path .. M._asWindowsPath(current_buf:sub(i + 1, -(#comp_extension + 1))) .. comp_extension
+					comp_file = full_include_path .. M._asWindowsPath(current_buf:sub(i + 1, -#extension)) .. comp_extension
+					print("Trying to find file with path " .. comp_file)
 					if not M._fileExists(comp_file) then
 						return nil
 					end
 					break
 				elseif dir == full_include_path then
-					comp_file = full_src_path .. M._asWindowsPath(current_buf:sub(i + 1, -(#comp_extension + 1))) .. comp_extension
+					comp_file = full_src_path .. M._asWindowsPath(current_buf:sub(i + 1, -#extension)) .. comp_extension
+					print("Trying to find file with path " .. comp_file)
 					if not M._fileExists(comp_file) then
 						return nil
 					end
