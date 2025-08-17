@@ -806,7 +806,6 @@ M.buildProject = function(opts)
 							local error = str:match(".-%.[ch]p?p?%(%d*,?%d*%):.-:.*")
 							if error then
 								local errorMsg = {}
-								print("We have an error: \n\n\t" .. error)
 								local filename_end = error:find("%(")
 								errorMsg.filename = error:sub(1, filename_end - 1)
 
@@ -824,17 +823,24 @@ M.buildProject = function(opts)
 								end
 
 								local diagnostic_search_s = col_number_end or line_number_end
-								local diagnostic_type_s = error:find(":", diagnostic_search_s) + 2
-								local diagnostic_type_e = error:find("%d", diagnostic_type_s) - 3
-								local error_type = (error:sub(diagnostic_type_s, diagnostic_type_e):match("error") and "E") or "W"
-								errorMsg.type = error_type
+								local diagnostic_type_s = error:find(":", diagnostic_search_s)
+								local diagnostic_type_e = error:find("%d", diagnostic_type_s)
 
-								local error_code_s = error:find("%d", diagnostic_type_e + 1)
-								local error_code_e = error:find(":", error_code_s)
-								errorMsg.nr = error:sub(error_code_s - 1, error_code_e - 1)
-								errorMsg.text = error:sub(error_code_e + 2)
+                                if diagnostic_search_s and diagnostic_type_e then
+                                    local error_type = (error:sub(diagnostic_type_s + 2, diagnostic_type_e - 3):match("error") and "E") or "W"
 
-								print(vim.inspect(errorMsg))
+                                    if error_type then
+                                        errorMsg.type = error_type
+                                    end
+
+                                    local error_code_s = error:find("%d", diagnostic_type_e + 1)
+                                    local error_code_e = error:find(":", error_code_s)
+
+                                    if error_code_s and error_code_e then
+                                        errorMsg.nr = error:sub(error_code_s - 1, error_code_e - 1)
+                                        errorMsg.text = error:sub(error_code_e + 2)
+                                    end
+                                end
 
 								table.insert(M._buildState.errorMsgs, errorMsg)
 							end
@@ -864,6 +870,7 @@ M.buildProject = function(opts)
 end
 
 M._pushErrorMsgsToQfList = function()
+	print(vim.inspect(M._buildState.errorMsgs))
 	if not M._isTableEmpty(M._buildState.errorMsgs) then
 		vim.fn.setqflist(M._buildState.errorMsgs, 'r')
 		vim.cmd("copen")
@@ -908,14 +915,12 @@ M.setup = function(opts)
 	vim.keymap.set("n", "<leader>cQ", function() vim.cmd("cclose") end, { desc = "Close qfix list" })
 	vim.api.nvim_create_autocmd({'BufEnter'}, {
 		group = vim.api.nvim_create_augroup("ntipp-format-BufEnter", { clear = true }),
-		pattern = { '*.h' },
+		pattern = { '*.lua', '*.h', '*.cpp' },
 		callback = function(ev)
-			local tabstop = vim.bo[ev.buf].tabstop
-			local shiftwidth = vim.bo[ev.buf].shiftwidth
-			if tabstop > 4 and shiftwidth > 4 then
-				vim.bo[ev.buf].tabstop = 4
-				vim.bo[ev.buf].shiftwidth = 4
-			end
+			vim.bo[ev.buf].tabstop = 4
+			vim.bo[ev.buf].shiftwidth = 4
+			vim.bo[ev.buf].expandtab = true
+			vim.bo[ev.buf].softtabstop = 4
 		end
 	})
 end
