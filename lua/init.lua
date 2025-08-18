@@ -770,11 +770,17 @@ M.runProject = function()
 			M._closeBuildWindow()
 		end,
 		on_stdout = function(_, data, _)
+            print("Stdout")
 			M._processStream(M._buildState.stream_buffer, data, build_window.buffer)
 		end,
 		on_stderr = function(_, data, _)
+            print("Stderr")
 			M._processStream(M._buildState.stream_buffer, data, build_window.buffer)
-		end
+		end,
+        on_data = function(_, data, _)
+            print("Data")
+            M._processStream(M._build.stream_buffer, data, build_window.buffer)
+        end
 	})
 end
 
@@ -870,7 +876,6 @@ M.buildProject = function(opts)
 end
 
 M._pushErrorMsgsToQfList = function()
-	print(vim.inspect(M._buildState.errorMsgs))
 	if not M._isTableEmpty(M._buildState.errorMsgs) then
 		vim.fn.setqflist(M._buildState.errorMsgs, 'r')
 		vim.cmd("copen")
