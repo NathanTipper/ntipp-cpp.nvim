@@ -752,6 +752,14 @@ M._processStream = function(stream_buffer, data, output_buffer)
 				end
 			end
 		end
+        -- vim.api.nvim_buf_call(output_buffer, function()
+        --     vim.api.nvim_feedkeys("GG", 'm', true)
+        --     print("Trying to feed GG to buffer")
+        -- end)
+        vim.api.nvim_win_call(M._buildState.win_id, function()
+            vim.api.nvim_feedkeys("GG", 'm', true)
+            print("Trying to feed GG to window " .. tostring(M._buildState.win_id))
+        end)
 	end
 end
 
@@ -798,6 +806,8 @@ M.buildProject = function(opts)
 	end
 
 	M._buildState.stream_buffer = ""
+
+    vim.cmd("cclose")
 	vim.fn.jobstart({ "build.bat" },
 		{
 			on_exit = function()
@@ -809,7 +819,8 @@ M.buildProject = function(opts)
 					if lines and not M._isTableEmpty(lines) then
 						for _, str in ipairs(lines) do
 							-- filename(line_number[,column_number]): diagnostic_type error_code : message
-							local error = str:match(".-%.[ch]p?p?%(%d*,?%d*%):.-:.*")
+                            -- P:\Panda\src\engine.cpp(106) : error C4716: 'Engine_CreateEntity2': must return a value
+							local error = str:match(".-%.[ch]p?p?%(%d*,?%d*%)%s?:.-:.*")
 							if error then
 								local errorMsg = {}
 								local filename_end = error:find("%(")
