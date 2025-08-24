@@ -958,7 +958,6 @@ M._findFileComplement = function()
 
 	local current_buf = vim.api.nvim_buf_get_name(0)
 
-	local dir = nil
 	local comp_file = nil
 
 	local extension_map = {
@@ -976,29 +975,16 @@ M._findFileComplement = function()
 	if M._srcDir == "" and M._srcDir == M._inclDir then
 		comp_file = current_buf:sub(1, -#extension) .. comp_extension
 	else
-		local full_src_path = M._winGetSrcFullFilePath()
-		local full_include_path = M._winGetIncludeFullFilePath()
-		for i = current_buf:len(), 1, -1 do
-			local char = current_buf:sub(i, i)
-			if char == "\\" then
-				dir = current_buf:sub(1, i)
-				if dir == full_src_path then
-					comp_file = full_include_path .. M._asWindowsPath(current_buf:sub(i + 1, -#extension)) .. comp_extension
-					print("Trying to find file with path " .. comp_file)
-					if not M._fileExists(comp_file) then
-						return nil
-					end
-					break
-				elseif dir == full_include_path then
-					comp_file = full_src_path .. M._asWindowsPath(current_buf:sub(i + 1, -#extension)) .. comp_extension
-					print("Trying to find file with path " .. comp_file)
-					if not M._fileExists(comp_file) then
-						return nil
-					end
-					break
-				end
-			end
-		end
+        print(current_buf)
+        if comp_extension == 'h' then
+            comp_file = current_buf:gsub(M._asWindowsPath(M._srcDir), M._asWindowsPath(M._inclDir))
+        elseif comp_extension == "cpp" then
+            comp_file = current_buf:gsub(M._asWindowsPath(M._inclDir), M._asWindowsPath(M._srcDir))
+        end
+
+        if comp_file then
+            comp_file = comp_file:gsub(extension, "." .. comp_extension)
+        end
 	end
 
 	return comp_file
